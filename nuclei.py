@@ -7,7 +7,9 @@ import utils
 import model as modellib
 from glob import glob
 import skimage.io
-from skimage import io
+import skimage.transform
+import scipy.misc
+import pandas as pd
 
 # Root directory of the project
 ROOT_DIR = os.getcwd()
@@ -71,7 +73,7 @@ class NucleiDataset(utils.Dataset):
         extract_path = lambda path: path.split('/')[:-2]
         paths = extract_path(image_path)
         paths = glob(os.path.join(*paths,'masks','*'))
-        masks = io.imread_collection(paths).concatenate()
+        masks = skimage.io.imread_collection(paths).concatenate()
         #masks = np.swapaxes(masks,0,2)
         masks = np.moveaxis(masks,0,-1)
         masks = np.where(masks > 0, True, False)
@@ -83,52 +85,58 @@ class NucleiDataset(utils.Dataset):
 
 
 ############################################################
-#  COCO Evaluation
+#  Evaluation
 ############################################################
+def rle_encode(x):
+    dots = np.where(x.T.flatten()==True)[0] # .T sets Fortran order down-then-right
+    run_lengths = []
+    prev = -2
+    for b in dots:
+        if (b>prev+1): run_lengths.extend((b+1, 0))
+        run_lengths[-1] += 1
+        prev = b
+    return run_lengths
 
-def build_coco_results(dataset, image_ids, rois, class_ids, scores, masks):
-    """Arrange resutls to match COCO specs in http://cocodataset.org/#format
-    """
+
+def remove_overlap(masks):
+    masks = masks.copy()
+    overlap_pixels = np.where(masks.sum(axis=2)>1)
+    maxs = np.argmax(masks[overlap_pixels[0],overlap_pixels[1],:],axis=1)
+    for i,j,z in zip(overlap_pixels[0],overlap_pixels[1],maxs):
+        masks[i,j,:] = 0
+        masks[i,j,z] = 1
+    empty_masks = []
+    for i in range(masks.shape[2]):
+        if masks[:,:,i].sum() == 0:
+            empty_masks.append(i)
+
+    return np.delete(masks,empty_masks,axis=2)
+
+
+def build_results(dataset, image_ids, rois, class_ids, scores, masks):
     # If no results, return an empty list
     if rois is None:
         return []
 
     results = []
+    masks = remove_overlap(masks)
+
     for image_id in image_ids:
         # Loop through detections
-        for i in range(rois.shape[0]):
-            class_id = class_ids[i]
-            score = scores[i]
-            bbox = np.around(rois[i], 1)
+        for i in range(masks.shape[2]):
             mask = masks[:, :, i]
-
             result = {
-                "image_id": image_id,
-                "category_id": dataset.get_source_class_id(class_id, "coco"),
-                "bbox": [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]],
-                "score": score,
-                "segmentation": maskUtils.encode(np.asfortranarray(mask))
+                "ImageId": image_id,
+                "EncodedPixels": str(rle_encode(mask))[1:-1].replace(',','')
             }
             results.append(result)
     return results
 
 
-def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
-    """Runs official COCO evaluation.
-    dataset: A Dataset object with valiadtion data
-    eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
-    limit: if not 0, it's the number of images to use for evaluation
-    """
-    # Pick COCO images from the dataset
-    image_ids = image_ids or dataset.image_ids
+def generate_submission(model, dataset):
+    image_ids = dataset.image_ids
 
-    # Limit to a subset
-    if limit:
-        image_ids = image_ids[:limit]
-
-    # Get corresponding COCO image IDs.
-    coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
-
+    nuclei_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
     t_prediction = 0
     t_start = time.time()
 
@@ -136,31 +144,20 @@ def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=Non
     for i, image_id in enumerate(image_ids):
         # Load image
         image = dataset.load_image(image_id)
-
         # Run detection
         t = time.time()
         r = model.detect([image], verbose=0)[0]
         t_prediction += (time.time() - t)
 
-        # Convert results to COCO format
-        image_results = build_coco_results(dataset, coco_image_ids[i:i + 1],
+        image_results = build_results(dataset, nuclei_image_ids[i:i + 1],
                                            r["rois"], r["class_ids"],
                                            r["scores"], r["masks"])
         results.extend(image_results)
-
-    # Load results. This modifies results with additional attributes.
-    coco_results = coco.loadRes(results)
-
-    # Evaluate
-    cocoEval = COCOeval(coco, coco_results, eval_type)
-    cocoEval.params.imgIds = coco_image_ids
-    cocoEval.evaluate()
-    cocoEval.accumulate()
-    cocoEval.summarize()
-
+    out = pd.DataFrame(results)
     print("Prediction time: {}. Average {}/image".format(
         t_prediction, t_prediction / len(image_ids)))
     print("Total time: ", time.time() - t_start)
+    return out
 
 
 ############################################################
@@ -191,10 +188,10 @@ if __name__ == '__main__':
                         default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
                         help='Logs and checkpoints directory (default=logs/)')
-    parser.add_argument('--limit', required=False,
-                        default=500,
-                        metavar="<image count>",
-                        help='Images to use for evaluation (default=500)')
+    parser.add_argument('--out', required=False,
+                        default='submission.csv',
+                        metavar="/path/to.csv",
+                        help='Output path for submission csv file')
     args = parser.parse_args()
     print("Command: ", args.command)
     print("Model: ", args.model)
@@ -234,8 +231,8 @@ if __name__ == '__main__':
     #    model_path = args.model
 
     # Load weights
-    #print("Loading weights ", model_path)
-    #model.load_weights(model_path, by_name=True)
+    print("Loading weights ", model_path)
+    model.load_weights(model_path, by_name=True)
 
     # Train or evaluate
     if args.command == "train":
@@ -278,10 +275,17 @@ if __name__ == '__main__':
     elif args.command == "evaluate":
         # Validation dataset
         dataset_val = NucleiDataset()
-        nuclei = dataset_val.load_nuclei(args.dataset, "minival", stage=args.stage)
+        nuclei = dataset_val.load_nuclei(args.dataset, "validation", stage=args.stage)
         dataset_val.prepare()
         print("Running COCO evaluation on {} images.".format(args.limit))
         evaluate_nuclei(model, dataset_val, nuclei, "bbox", limit=int(args.limit))
+    elif args.command == 'submit':
+        dataset_test = NucleiDataset()
+        nuclei = dataset_test.load_nuclei(args.dataset, "test", stage=args.stage)
+        dataset_test.prepare()
+        print("Running submission on {} images.".format(len(dataset_test.image_ids)))
+        out = generate_submission(model, dataset_test)
+        out.to_csv(args.out,index=False,columns=['ImageId','EncodedPixels'])
     else:
         print("'{}' is not recognized. "
               "Use 'train' or 'evaluate'".format(args.command))
