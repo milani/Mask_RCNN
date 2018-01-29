@@ -32,11 +32,17 @@ class NucleiConfig(Config):
     GPU_COUNT = 1
     NUM_CLASSES = 1 + 1  # Background + Nuclei
     USE_MINI_MASK=True
-    MINI_MASK_SHAPE = (320,320)
-    RPN_ANCHOR_SCALES = (32, 64, 128, 256)
+    MINI_MASK_SHAPE = (64,64)
+    RPN_ANCHOR_SCALES = (32, 64, 128)
+    RPN_ANCHOR_RATIOS = [0.25, 0.5, 1, 2, 4]
     RPN_NMS_THRESHOLD = 0.7
     IMAGE_MIN_DIM =400
     IMAGE_MAX_DIM=640
+    DETECTION_MAX_INSTANCES = 200
+    RPN_TRAIN_ANCHORS_PER_IMAGE = 512
+    RPN_NMS_THRESHOLD = 0.6
+    MAX_GT_INSTANCES = 200
+    DETECTION_MIN_CONFIDENCE = 0.6
 
 
 ############################################################
@@ -227,12 +233,12 @@ if __name__ == '__main__':
     elif args.model.lower() == "imagenet":
         # Start from ImageNet trained weights
         model_path = model.get_imagenet_weights()
-    #else:
-    #    model_path = args.model
+    else:
+        model_path = args.model
 
     # Load weights
     print("Loading weights ", model_path)
-    model.load_weights(model_path, by_name=True)
+    #model.load_weights(model_path, by_name=True)
 
     # Train or evaluate
     if args.command == "train":
