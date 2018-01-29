@@ -73,6 +73,49 @@ def apply_mask(image, mask, color, alpha=0.5):
     return image
 
 
+def display_image_masks(image, masks, title="",
+                      figsize=(16, 16), ax=None):
+    """
+    masks: [height, width, num_instances]
+    figsize: (optional) the size of the image.
+    """
+    # Number of instances
+    N = masks.shape[2]
+    if not ax:
+        _, ax = plt.subplots(1, figsize=figsize)
+
+    # Generate random colors
+    colors = random_colors(N)
+
+    # Show area outside image boundaries.
+    height, width = image.shape[:2]
+    ax.set_ylim(height + 10, -10)
+    ax.set_xlim(-10, width + 10)
+    ax.axis('off')
+    ax.set_title(title)
+
+    masked_image = image.astype(np.uint32).copy()
+    for i in range(N):
+        color = colors[i]
+
+        # Mask
+        mask = masks[:, :, i]
+        masked_image = apply_mask(masked_image, mask, color)
+
+        # Mask Polygon
+        # Pad to ensure proper polygons for masks that touch image edges.
+        padded_mask = np.zeros(
+            (mask.shape[0] + 2, mask.shape[1] + 2), dtype=np.uint8)
+        padded_mask[1:-1, 1:-1] = mask
+        contours = find_contours(padded_mask, 0.5)
+        for verts in contours:
+            # Subtract the padding and flip (y, x) to (x, y)
+            verts = np.fliplr(verts) - 1
+            p = Polygon(verts, facecolor="none", edgecolor=color)
+            ax.add_patch(p)
+    ax.imshow(masked_image.astype(np.uint8))
+    plt.show()
+ 
 def display_instances(image, boxes, masks, class_ids, class_names,
                       scores=None, title="",
                       figsize=(16, 16), ax=None):
